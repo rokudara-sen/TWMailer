@@ -13,11 +13,11 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>  // Added for mkdir
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 1024//1 KB to read data
 
 using namespace std;
 
-string mail_spool_dir;
+string mail_spool_dir;//directory for spool
 
 void handle_client(int client_sock);
 string read_line(int sock);
@@ -28,7 +28,7 @@ void process_read(int sock);
 void process_del(int sock);
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
+    if (argc != 3) {//check if right arguments added
         cerr << "Usage: ./twmailer-server <port> <mail-spool-directoryname>" << endl;
         exit(EXIT_FAILURE);
     }
@@ -49,7 +49,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Bind
+    // Bind socket to server adress
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(port);
@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Listen
+    // Listen for requests
     if (listen(server_sock, 3) < 0) {
         perror("Listen");
         exit(EXIT_FAILURE);
@@ -66,7 +66,7 @@ int main(int argc, char *argv[]) {
 
     cout << "Server is listening on port " << port << endl;
 
-    while (true) {
+    while (true) {//incoming connections
         // Accept
         if ((client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_len)) < 0) {
             perror("Accept");
@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
 
 void handle_client(int client_sock) {
     string command;
-    while (true) {
+    while (true) {//listen for commands
         command = read_line(client_sock);
         if (command == "SEND") {
             process_send(client_sock);
@@ -96,7 +96,7 @@ void handle_client(int client_sock) {
         } else if (command == "QUIT") {
             // No response is sent for QUIT; close the connection
             break;
-        } else {
+        } else {//command unknown or error
             send_response(client_sock, "ERR\n");
         }
     }
@@ -105,7 +105,7 @@ void handle_client(int client_sock) {
 string read_line(int sock) {
     char c;
     string line;
-    while (recv(sock, &c, 1, 0) > 0) {
+    while (recv(sock, &c, 1, 0) > 0) {//read one character at a time until newline
         if (c == '\n') break;
         line += c;
     }
@@ -113,13 +113,13 @@ string read_line(int sock) {
 }
 
 void send_response(int sock, const string& response) {
-    	const char* data = response.c_str();
+    	const char* data = response.c_str();//convert to c style string for send call
         size_t total_sent = 0;
         size_t data_len = response.length();
 
         while(total_sent < data_len) {
                 ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0);
-                if (sent <= 0)  {
+                if (sent <= 0)  {//error while sending
                         perror("send");
                         break;
                 }
@@ -153,7 +153,7 @@ void process_send(int sock) {
         closedir(dir);
     }
 
-    string msg_filename = user_dir + "/" + to_string(msg_count + 1) + ".txt";
+    string msg_filename = user_dir + "/" + to_string(msg_count + 1) + ".txt";//save in file and response to client
     ofstream msg_file(msg_filename);
     if (msg_file.is_open()) {
         msg_file << "From: " << sender << "\n";
@@ -174,13 +174,13 @@ void process_list(int sock) {
     DIR *dir;
     struct dirent *ent;
 
-    if ((dir = opendir(user_dir.c_str())) != NULL) {
+    if ((dir = opendir(user_dir.c_str())) != NULL) {//open directory of user and read files
         while ((ent = readdir(dir)) != NULL) {
             if (ent->d_type == DT_REG) {
                 string filepath = user_dir + "/" + ent->d_name;
                 ifstream msg_file(filepath);
                 string line;
-                while (getline(msg_file, line)) {
+                while (getline(msg_file, line)) {//look for subjects line
                     if (line.find("Subject: ") == 0) {
                         subjects.push_back(line.substr(9));
                         break;
@@ -194,11 +194,11 @@ void process_list(int sock) {
 
     send_response(sock, to_string(subjects.size()) + "\n");
     for (const auto& subject : subjects) {
-        send_response(sock, subject + "\n");
+        send_response(sock, subject + "\n");//sending subjects
     }
 }
 
-void process_read(int sock) {
+void process_read(int sock) {//open file with username and message number
     string username = read_line(sock);
     string msg_num = read_line(sock);
     string filepath = mail_spool_dir + "/" + username + "/" + msg_num + ".txt";
@@ -217,7 +217,7 @@ void process_read(int sock) {
     }
 }
 
-void process_del(int sock) {
+void process_del(int sock) {//delete file with username and messagenumber
     string username = read_line(sock);
     string msg_num = read_line(sock);
     string filepath = mail_spool_dir + "/" + username + "/" + msg_num + ".txt";
