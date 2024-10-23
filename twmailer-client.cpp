@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
-#define BUFFER_SIZE 1024
+#define BUFFER_SIZE 1024//1 KB to read data
 
 using namespace std;
 
@@ -16,7 +16,7 @@ string read_line(int sock);
 void interactive_mode(int sock);
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
+    if (argc != 3) {// check if right arguments added
         cerr << "Usage: ./twmailer-client <ip> <port>" << endl;
         exit(EXIT_FAILURE);
     }
@@ -33,8 +33,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
+    server_addr.sin_family = AF_INET;// IPv4
+    server_addr.sin_port = htons(port);// Port number in network byte order
 
     // Convert IPv4 and IPv6 addresses from text to binary form
     if(inet_pton(AF_INET, ip, &server_addr.sin_addr)<=0) {
@@ -42,7 +42,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Connect
+    // Connect to server
     if (connect(client_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Connection Failed");
         exit(EXIT_FAILURE);
@@ -60,7 +60,7 @@ int main(int argc, char *argv[]) {
 void interactive_mode(int sock) {
     string input;
 
-    while (true) {
+    while (true) {//Menu-Loop for input
         cout << "Enter command (SEND, LIST, READ, DEL, QUIT): ";
         getline(cin, input);
 
@@ -68,7 +68,7 @@ void interactive_mode(int sock) {
             send_command(sock, "SEND\n");
 
             string sender, receiver, subject, message, line;
-            cout << "Sender: ";
+            cout << "Sender: ";//ask for message details
             getline(cin, sender);
             cout << "Receiver: ";
             getline(cin, receiver);
@@ -76,7 +76,7 @@ void interactive_mode(int sock) {
             getline(cin, subject);
             cout << "Message (end with a single '.'): " << endl;
             while (getline(cin, line)) {
-                if (line == ".") break;
+                if (line == ".") break;//message ends with .
                 message += line + "\n";
             }
 
@@ -102,7 +102,7 @@ void interactive_mode(int sock) {
             }
             cout << "Number of messages: " << count_str;
             int num = stoi(count_str);
-            for (int i = 0; i < num; ++i) {
+            for (int i = 0; i < num; ++i) {//read messages
                 string subject = read_line(sock);
                 cout << subject;
             }
@@ -120,7 +120,7 @@ void interactive_mode(int sock) {
             if (response == "OK\n") {
                 while (true) {
                     response = read_line(sock);
-                    if (response == ".\n" || response.empty()) break;
+                    if (response == ".\n" || response.empty()) break;//.\n termination signal
                     cout << response;
                 }
             } else {
@@ -149,13 +149,13 @@ void interactive_mode(int sock) {
 }
 
 void send_command(int sock, const string& command) {
-    	const char* data = command.c_str();
+    	const char* data = command.c_str();//convert to c style string
 	size_t total_sent = 0;
 	size_t data_len = command.length();
 	
 	while(total_sent < data_len) {
 		ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0);
-		if (sent <= 0)  {
+		if (sent <= 0)  {//error or nothing sent
 			perror("send");
 			break;
 		}
@@ -169,11 +169,11 @@ string read_line(int sock) {
         size_t pos = buffer.find('\n');
         if (pos != string::npos) {
             string line = buffer.substr(0, pos + 1);
-            buffer.erase(0, pos + 1);
+            buffer.erase(0, pos + 1);//erase line from buffer and return line
             return line;
         }
         char temp[1];
-        int valread = recv(sock, temp, 1, 0);
+        int valread = recv(sock, temp, 1, 0);//buffer not empty but no newline, read one character at a time
         if (valread <= 0) {
             // Connection closed or error
             return "";
