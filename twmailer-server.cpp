@@ -113,7 +113,18 @@ string read_line(int sock) {
 }
 
 void send_response(int sock, const string& response) {
-    send(sock, response.c_str(), response.length(), 0);
+    	const char* data = response.c_str();
+        size_t total_sent = 0;
+        size_t data_len = response.length();
+
+        while(total_sent < data_len) {
+                ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0);
+                if (sent <= 0)  {
+                        perror("send");
+                        break;
+                }
+                total_sent += sent;
+        }
 }
 
 void process_send(int sock) {

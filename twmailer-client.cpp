@@ -149,7 +149,18 @@ void interactive_mode(int sock) {
 }
 
 void send_command(int sock, const string& command) {
-    send(sock, command.c_str(), command.length(), 0);
+    	const char* data = command.c_str();
+	size_t total_sent = 0;
+	size_t data_len = command.length();
+	
+	while(total_sent < data_len) {
+		ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0);
+		if (sent <= 0)  {
+			perror("send");
+			break;
+		}
+		total_sent += sent;
+	}
 }
 
 string read_line(int sock) {
