@@ -94,6 +94,7 @@ void handle_client(int client_sock) {
         } else if (command == "DEL") {
             process_del(client_sock);
         } else if (command == "QUIT") {
+            // No response is sent for QUIT; close the connection
             break;
         } else {
             send_response(client_sock, "ERR\n");
@@ -199,6 +200,7 @@ void process_read(int sock) {
             send_response(sock, line + "\n");
         }
         msg_file.close();
+        send_response(sock, ".\n"); // Indicate end of message
     } else {
         send_response(sock, "ERR\n");
     }

@@ -12,7 +12,7 @@
 using namespace std;
 
 void send_command(int sock, const string& command);
-string receive_response(int sock);
+string read_line(int sock);
 void interactive_mode(int sock);
 
 int main(int argc, char *argv[]) {
@@ -53,6 +53,7 @@ int main(int argc, char *argv[]) {
     interactive_mode(client_sock);
 
     close(client_sock);
+    cout << "Disconnected from server." << endl;
     return 0;
 }
 
@@ -85,7 +86,8 @@ void interactive_mode(int sock) {
             send_command(sock, message);
             send_command(sock, ".\n");
 
-            cout << receive_response(sock);
+            string response = read_line(sock);
+            cout << response;
         } else if (input == "LIST") {
             send_command(sock, "LIST\n");
             string username;
@@ -93,11 +95,16 @@ void interactive_mode(int sock) {
             getline(cin, username);
             send_command(sock, username + "\n");
 
-            string count = receive_response(sock);
-            cout << "Number of messages: " << count;
-            int num = stoi(count);
+            string count_str = read_line(sock);
+            if (count_str.empty()) {
+                cout << "Error: No response from server." << endl;
+                break;
+            }
+            cout << "Number of messages: " << count_str;
+            int num = stoi(count_str);
             for (int i = 0; i < num; ++i) {
-                cout << receive_response(sock);
+                string subject = read_line(sock);
+                cout << subject;
             }
         } else if (input == "READ") {
             send_command(sock, "READ\n");
@@ -109,11 +116,11 @@ void interactive_mode(int sock) {
             send_command(sock, username + "\n");
             send_command(sock, msg_num + "\n");
 
-            string response = receive_response(sock);
+            string response = read_line(sock);
             if (response == "OK\n") {
                 while (true) {
-                    response = receive_response(sock);
-                    if (response.empty()) break;
+                    response = read_line(sock);
+                    if (response == ".\n" || response.empty()) break;
                     cout << response;
                 }
             } else {
@@ -129,9 +136,11 @@ void interactive_mode(int sock) {
             send_command(sock, username + "\n");
             send_command(sock, msg_num + "\n");
 
-            cout << receive_response(sock);
+            string response = read_line(sock);
+            cout << response;
         } else if (input == "QUIT") {
             send_command(sock, "QUIT\n");
+            // No response is expected; close the socket and exit
             break;
         } else {
             cout << "Unknown command." << endl;
@@ -143,12 +152,22 @@ void send_command(int sock, const string& command) {
     send(sock, command.c_str(), command.length(), 0);
 }
 
-string receive_response(int sock) {
-    char buffer[BUFFER_SIZE] = {0};
-    int valread = recv(sock, buffer, BUFFER_SIZE - 1, 0);
-    if (valread > 0) {
-        return string(buffer, valread);
+string read_line(int sock) {
+    static string buffer;
+    while (true) {
+        size_t pos = buffer.find('\n');
+        if (pos != string::npos) {
+            string line = buffer.substr(0, pos + 1);
+            buffer.erase(0, pos + 1);
+            return line;
+        }
+        char temp[1];
+        int valread = recv(sock, temp, 1, 0);
+        if (valread <= 0) {
+            // Connection closed or error
+            return "";
+        }
+        buffer += temp[0];
     }
-    return "";
 }
 
