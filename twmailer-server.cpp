@@ -212,73 +212,45 @@ void process_login(int sock, string& username, sockaddr_in client_addr, bool& au
 bool authenticate_user(const string& username, const string& password) {
     LDAP *ld; // ldap connection
     int rc; // return code
-    LDAPMessage *result = NULL; // ldap search result
-    LDAPMessage *e; // ldap entry
-    char *dn; // distinguished name
 
+    // LDAP server URI and user DN
     string ldap_uri = "ldap://ldap.technikum-wien.at"; // ldap server uri
-    string search_base = "dc=technikum-wien,dc=at"; // ldap search base
-    string search_filter = "(uid=" + username + ")"; // ldap search filter
+    string ldap_bind_dn = "uid=" + username + ",ou=people,dc=technikum-wien,dc=at"; // user's DN
 
-    // initialize ldap connection
+    // Initialize LDAP connection
     rc = ldap_initialize(&ld, ldap_uri.c_str());
     if (rc != LDAP_SUCCESS) {
-        cerr << "LDAP initialization failed" << endl;
+        cerr << "LDAP initialization failed: " << ldap_err2string(rc) << endl;
         return false;
     }
 
+    // Set LDAP version
     int version = LDAP_VERSION3; // ldap version 3
     ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &version); // set ldap version
 
-    // anonymous bind using ldap_sasl_bind_s
-    rc = ldap_sasl_bind_s(ld, NULL, NULL, NULL, NULL, NULL, NULL);
+    // Start TLS
+    rc = ldap_start_tls_s(ld, NULL, NULL);
     if (rc != LDAP_SUCCESS) {
-        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
-        cerr << "LDAP anonymous bind failed" << endl;
+        ldap_unbind_ext_s(ld, NULL, NULL);
+        cerr << "ldap_start_tls_s() failed: " << ldap_err2string(rc) << endl;
         return false;
     }
 
-    // search for the user
-    rc = ldap_search_ext_s(ld, search_base.c_str(), LDAP_SCOPE_SUBTREE, search_filter.c_str(),
-                           NULL, 0, NULL, NULL, NULL, LDAP_NO_LIMIT, &result);
-    if (rc != LDAP_SUCCESS) {
-        ldap_msgfree(result); // free result
-        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
-        cerr << "LDAP search failed" << endl;
-        return false;
-    }
-
-    e = ldap_first_entry(ld, result); // get first entry
-    if (e == NULL) {
-        ldap_msgfree(result); // free result
-        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
-        cerr << "User not found" << endl;
-        return false;
-    }
-
-    dn = ldap_get_dn(ld, e); // get distinguished name
-    if (dn == NULL) {
-        ldap_msgfree(result); // free result
-        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
-        cerr << "Failed to get DN" << endl;
-        return false;
-    }
-
-    // attempt to bind with user dn and password
+    // Prepare credentials
     struct berval cred;
     cred.bv_val = (char*)password.c_str();  // set password
     cred.bv_len = password.length();
 
-    rc = ldap_sasl_bind_s(ld, dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL); // bind with credentials
+    // Attempt to bind using the user's DN and password
+    rc = ldap_sasl_bind_s(ld, ldap_bind_dn.c_str(), LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL);
 
-    ldap_memfree(dn); // free dn
-    ldap_msgfree(result); // free result
+    // Clean up
     ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
 
     if (rc == LDAP_SUCCESS) {
         return true; // authentication successful
     } else {
-        cerr << "LDAP bind failed" << endl;
+        cerr << "LDAP bind failed: " << ldap_err2string(rc) << endl;
         return false; // authentication failed
     }
 }
