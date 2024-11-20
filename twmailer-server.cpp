@@ -1,3 +1,4 @@
+// include all necessary headers
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -5,184 +6,351 @@
 #include <string>
 #include <map>
 #include <vector>
-#include <unistd.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
+#include <unistd.h> // for close()
+#include <netinet/in.h> // for sockaddr_in
+#include <sys/socket.h> // for socket functions
 #include <sys/types.h>
-#include <dirent.h>
-#include <arpa/inet.h>
-#include <sys/stat.h>  // Added for mkdir
+#include <dirent.h> // for directory operations
+#include <arpa/inet.h> // for inet_ntoa
+#include <sys/stat.h> // for mkdir
+#include <ctime> // for time()
+#include <mutex> // for mutexes
+#include <thread> // for threading
+#include <unordered_map> // for blacklist
+#include <ldap.h> // for ldap functions
 
-#define BUFFER_SIZE 1024//1 KB to read data
+#define BUFFER_SIZE 1024 // define buffer size
+#define LDAP_DEPRECATED 1 // allow deprecated ldap functions
 
 using namespace std;
 
-string mail_spool_dir;//directory for spool
+// global variables
+string mail_spool_dir; // directory for mail spool
+mutex blacklist_mutex; // mutex for blacklist
+unordered_map<string, time_t> blacklist; // ip blacklist
+mutex mail_mutex; // mutex for mail operations
 
-void handle_client(int client_sock);
+// function declarations
+void handle_client(int client_sock, sockaddr_in client_addr);
 string read_line(int sock);
 void send_response(int sock, const string& response);
-void process_send(int sock);
-void process_list(int sock);
-void process_read(int sock);
-void process_del(int sock);
+void process_login(int sock, string& username, sockaddr_in client_addr, bool& authenticated);
+void process_send(int sock, const string& username);
+void process_list(int sock, const string& username);
+void process_read(int sock, const string& username);
+void process_del(int sock, const string& username);
+bool authenticate_user(const string& username, const string& password);
+bool is_blacklisted(const string& ip);
+void update_blacklist(const string& ip);
+void persist_blacklist();
+void load_blacklist();
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {//check if right arguments added
+    // check if correct number of arguments is provided
+    if (argc != 3) {
         cerr << "Usage: ./twmailer-server <port> <mail-spool-directoryname>" << endl;
         exit(EXIT_FAILURE);
     }
 
-    int port = atoi(argv[1]);
-    mail_spool_dir = argv[2];
+    int port = atoi(argv[1]); // get port number
+    mail_spool_dir = argv[2]; // get mail spool directory name
 
-    // Create mail spool directory if it doesn't exist
+    // load the blacklist from file
+    load_blacklist();
+
+    // create mail spool directory if it doesn't exist
     mkdir(mail_spool_dir.c_str(), 0777);
 
-    int server_sock, client_sock;
-    struct sockaddr_in server_addr{}, client_addr{};
-    socklen_t client_len = sizeof(client_addr);
+    int server_sock, client_sock; // socket descriptors
+    struct sockaddr_in server_addr{}, client_addr{}; // addresses
+    socklen_t client_len = sizeof(client_addr); // client address length
 
-    // Create socket
+    // create socket
     if ((server_sock = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
         perror("Socket failed");
         exit(EXIT_FAILURE);
     }
 
-    // Bind socket to server adress
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+    // bind socket to server address
+    server_addr.sin_family = AF_INET; // ipv4
+    server_addr.sin_addr.s_addr = INADDR_ANY; // any incoming interface
+    server_addr.sin_port = htons(port); // port number
     if (::bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed");
         exit(EXIT_FAILURE);
     }
 
-    // Listen for requests
-    if (listen(server_sock, 3) < 0) {
+    // listen for incoming connections
+    if (listen(server_sock, 10) < 0) {
         perror("Listen");
         exit(EXIT_FAILURE);
     }
 
     cout << "Server is listening on port " << port << endl;
 
-    while (true) {//incoming connections
-        // Accept
+    while (true) {
+        // accept incoming connections
         if ((client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &client_len)) < 0) {
             perror("Accept");
             exit(EXIT_FAILURE);
         }
         cout << "Connection accepted" << endl;
-        handle_client(client_sock);
-        close(client_sock);
-        cout << "Connection closed" << endl;
+
+        // handle client in a new thread
+        thread t(handle_client, client_sock, client_addr);
+        t.detach(); // detach the thread
     }
 
     return 0;
 }
 
-void handle_client(int client_sock) {
-    string command;
-    while (true) {//listen for commands
-        command = read_line(client_sock);
-        if (command == "SEND") {
-            process_send(client_sock);
+void handle_client(int client_sock, sockaddr_in client_addr) {
+    string command; // store client command
+    string username; // store username after login
+    bool authenticated = false; // authentication status
+    int login_attempts = 0; // count login attempts
+    string client_ip = inet_ntoa(client_addr.sin_addr); // get client ip
+
+    while (true) {
+        // check if client ip is blacklisted
+        if (is_blacklisted(client_ip)) {
+            send_response(client_sock, "ERR\n"); // send error response
+            close(client_sock); // close connection
+            cout << "Connection closed (blacklisted IP)" << endl;
+            return;
+        }
+
+        command = read_line(client_sock); // read command from client
+
+        if (command == "LOGIN") {
+            process_login(client_sock, username, client_addr, authenticated); // process login
+            if (!authenticated) {
+                login_attempts++; // increment login attempts
+                if (login_attempts >= 3) {
+                    update_blacklist(client_ip); // add to blacklist
+                    send_response(client_sock, "ERR\n"); // send error
+                    close(client_sock); // close connection
+                    cout << "Connection closed (too many login attempts)" << endl;
+                    return;
+                }
+            }
+        } else if (command == "SEND") {
+            if (authenticated) {
+                process_send(client_sock, username); // process send
+            } else {
+                send_response(client_sock, "ERR\n"); // send error
+            }
         } else if (command == "LIST") {
-            process_list(client_sock);
+            if (authenticated) {
+                process_list(client_sock, username); // process list
+            } else {
+                send_response(client_sock, "ERR\n"); // send error
+            }
         } else if (command == "READ") {
-            process_read(client_sock);
+            if (authenticated) {
+                process_read(client_sock, username); // process read
+            } else {
+                send_response(client_sock, "ERR\n"); // send error
+            }
         } else if (command == "DEL") {
-            process_del(client_sock);
+            if (authenticated) {
+                process_del(client_sock, username); // process delete
+            } else {
+                send_response(client_sock, "ERR\n"); // send error
+            }
         } else if (command == "QUIT") {
-            // No response is sent for QUIT; close the connection
+            // no response for quit, close connection
             break;
-        } else {//command unknown or error
-            send_response(client_sock, "ERR\n");
+        } else {
+            send_response(client_sock, "ERR\n"); // unknown command
         }
     }
+
+    close(client_sock); // close client socket
+    cout << "Connection closed" << endl;
 }
 
 string read_line(int sock) {
     char c;
     string line;
-    while (recv(sock, &c, 1, 0) > 0) {//read one character at a time until newline
-        if (c == '\n') break;
-        line += c;
+    while (recv(sock, &c, 1, 0) > 0) { // read one character at a time
+        if (c == '\n') break; // end of line
+        line += c; // append character to line
     }
-    return line;
+    return line; // return the line
 }
 
 void send_response(int sock, const string& response) {
-    	const char* data = response.c_str();//convert to c style string for send call
-        size_t total_sent = 0;
-        size_t data_len = response.length();
+    const char* data = response.c_str(); // get c string
+    size_t total_sent = 0;
+    size_t data_len = response.length();
 
-        while(total_sent < data_len) {
-                ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0);
-                if (sent <= 0)  {//error while sending
-                        perror("send");
-                        break;
-                }
-                total_sent += sent;
+    while(total_sent < data_len) {
+        ssize_t sent = send(sock, data + total_sent, data_len - total_sent, 0); // send data
+        if (sent <= 0) {
+            perror("send"); // error in sending
+            break;
         }
+        total_sent += sent; // update total sent
+    }
 }
 
-void process_send(int sock) {
-    string sender = read_line(sock);
-    string receiver = read_line(sock);
-    string subject = read_line(sock);
-    string message, line;
+void process_login(int sock, string& username, sockaddr_in client_addr, bool& authenticated) {
+    username = read_line(sock); // read username
+    string password = read_line(sock); // read password
+    string client_ip = inet_ntoa(client_addr.sin_addr); // get client ip
 
-    // Read message until a single dot '.\n' is encountered
-    while ((line = read_line(sock)) != ".") {
-        message += line + "\n";
+    if (authenticate_user(username, password)) { // authenticate user
+        authenticated = true; // set authenticated to true
+        send_response(sock, "OK\n"); // send ok response
+    } else {
+        authenticated = false; // authentication failed
+        send_response(sock, "ERR\n"); // send error response
+    }
+}
+
+bool authenticate_user(const string& username, const string& password) {
+    LDAP *ld; // ldap connection
+    int rc; // return code
+    LDAPMessage *result = NULL; // ldap search result
+    LDAPMessage *e; // ldap entry
+    char *dn; // distinguished name
+
+    string ldap_uri = "ldap://ldap.technikum-wien.at"; // ldap server uri
+    string search_base = "dc=technikum-wien,dc=at"; // ldap search base
+    string search_filter = "(uid=" + username + ")"; // ldap search filter
+
+    // initialize ldap connection
+    rc = ldap_initialize(&ld, ldap_uri.c_str());
+    if (rc != LDAP_SUCCESS) {
+        cerr << "LDAP initialization failed" << endl;
+        return false;
     }
 
-    // Save the message
-    string user_dir = mail_spool_dir + "/" + receiver;
-    mkdir(user_dir.c_str(), 0777);
+    int version = LDAP_VERSION3; // ldap version 3
+    ldap_set_option(ld, LDAP_OPT_PROTOCOL_VERSION, &version); // set ldap version
 
-    // Count existing messages
+    // anonymous bind using ldap_sasl_bind_s
+    rc = ldap_sasl_bind_s(ld, NULL, NULL, NULL, NULL, NULL, NULL);
+    if (rc != LDAP_SUCCESS) {
+        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
+        cerr << "LDAP anonymous bind failed" << endl;
+        return false;
+    }
+
+    // search for the user
+    rc = ldap_search_ext_s(ld, search_base.c_str(), LDAP_SCOPE_SUBTREE, search_filter.c_str(),
+                           NULL, 0, NULL, NULL, NULL, LDAP_NO_LIMIT, &result);
+    if (rc != LDAP_SUCCESS) {
+        ldap_msgfree(result); // free result
+        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
+        cerr << "LDAP search failed" << endl;
+        return false;
+    }
+
+    e = ldap_first_entry(ld, result); // get first entry
+    if (e == NULL) {
+        ldap_msgfree(result); // free result
+        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
+        cerr << "User not found" << endl;
+        return false;
+    }
+
+    dn = ldap_get_dn(ld, e); // get distinguished name
+    if (dn == NULL) {
+        ldap_msgfree(result); // free result
+        ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
+        cerr << "Failed to get DN" << endl;
+        return false;
+    }
+
+    // attempt to bind with user dn and password
+    struct berval cred;
+    cred.bv_val = (char*)password.c_str();  // set password
+    cred.bv_len = password.length();
+
+    rc = ldap_sasl_bind_s(ld, dn, LDAP_SASL_SIMPLE, &cred, NULL, NULL, NULL); // bind with credentials
+
+    ldap_memfree(dn); // free dn
+    ldap_msgfree(result); // free result
+    ldap_unbind_ext_s(ld, NULL, NULL); // unbind ldap
+
+    if (rc == LDAP_SUCCESS) {
+        return true; // authentication successful
+    } else {
+        cerr << "LDAP bind failed" << endl;
+        return false; // authentication failed
+    }
+}
+
+void process_send(int sock, const string& username) {
+    string receiver = read_line(sock); // read receiver
+    string subject = read_line(sock); // read subject
+    string message, line;
+
+    // truncate subject if necessary
+    if (subject.length() > 80) {
+        subject = subject.substr(0, 80); // limit to 80 chars
+    }
+
+    // read message until a single dot '.\n' is encountered
+    while ((line = read_line(sock)) != ".") {
+        message += line + "\n"; // append line to message
+    }
+
+    // lock mutex before accessing mail spool
+    mail_mutex.lock();
+
+    // save the message
+    string user_dir = mail_spool_dir + "/" + receiver;
+    mkdir(user_dir.c_str(), 0777); // create user directory if not exists
+
+    // count existing messages
     int msg_count = 0;
     DIR *dir;
     struct dirent *ent;
     if ((dir = opendir(user_dir.c_str())) != NULL) {
         while ((ent = readdir(dir)) != NULL) {
-            if (ent->d_type == DT_REG) msg_count++;
+            if (ent->d_type == DT_REG) msg_count++; // count files
         }
         closedir(dir);
     }
 
-    string msg_filename = user_dir + "/" + to_string(msg_count + 1) + ".txt";//save in file and response to client
+    string msg_filename = user_dir + "/" + to_string(msg_count + 1) + ".txt"; // message filename
     ofstream msg_file(msg_filename);
     if (msg_file.is_open()) {
-        msg_file << "From: " << sender << "\n";
-        msg_file << "To: " << receiver << "\n";
-        msg_file << "Subject: " << subject << "\n";
-        msg_file << message;
-        msg_file.close();
-        send_response(sock, "OK\n");
+        msg_file << "From: " << username << "\n"; // write sender
+        msg_file << "To: " << receiver << "\n"; // write receiver
+        msg_file << "Subject: " << subject << "\n"; // write subject
+        msg_file << message; // write message body
+        msg_file.close(); // close file
+        send_response(sock, "OK\n"); // send ok response
     } else {
-        send_response(sock, "ERR\n");
+        send_response(sock, "ERR\n"); // send error response
     }
+
+    mail_mutex.unlock(); // unlock mutex
 }
 
-void process_list(int sock) {
-    string username = read_line(sock);
+void process_list(int sock, const string& username) {
+    // lock mutex before accessing mail spool
+    mail_mutex.lock();
+
     string user_dir = mail_spool_dir + "/" + username;
     vector<string> subjects;
     DIR *dir;
     struct dirent *ent;
 
-    if ((dir = opendir(user_dir.c_str())) != NULL) {//open directory of user and read files
+    if ((dir = opendir(user_dir.c_str())) != NULL) {
+        // read all files in user directory
         while ((ent = readdir(dir)) != NULL) {
             if (ent->d_type == DT_REG) {
                 string filepath = user_dir + "/" + ent->d_name;
                 ifstream msg_file(filepath);
                 string line;
-                while (getline(msg_file, line)) {//look for subjects line
+                while (getline(msg_file, line)) {
                     if (line.find("Subject: ") == 0) {
-                        subjects.push_back(line.substr(9));
+                        subjects.push_back(line.substr(9)); // extract subject
                         break;
                     }
                 }
@@ -192,40 +360,95 @@ void process_list(int sock) {
         closedir(dir);
     }
 
-    send_response(sock, to_string(subjects.size()) + "\n");
+    mail_mutex.unlock(); // unlock mutex
+
+    send_response(sock, to_string(subjects.size()) + "\n"); // send number of messages
     for (const auto& subject : subjects) {
-        send_response(sock, subject + "\n");//sending subjects
+        send_response(sock, subject + "\n"); // send each subject
     }
 }
 
-void process_read(int sock) {//open file with username and message number
-    string username = read_line(sock);
-    string msg_num = read_line(sock);
+void process_read(int sock, const string& username) {
+    string msg_num = read_line(sock); // read message number
+
+    // lock mutex before accessing mail spool
+    mail_mutex.lock();
+
     string filepath = mail_spool_dir + "/" + username + "/" + msg_num + ".txt";
 
     ifstream msg_file(filepath);
     if (msg_file.is_open()) {
-        send_response(sock, "OK\n");
+        send_response(sock, "OK\n"); // send ok response
         string line;
         while (getline(msg_file, line)) {
-            send_response(sock, line + "\n");
+            send_response(sock, line + "\n"); // send each line of message
         }
         msg_file.close();
-        send_response(sock, ".\n"); // Indicate end of message
+        send_response(sock, ".\n"); // indicate end of message
     } else {
-        send_response(sock, "ERR\n");
+        send_response(sock, "ERR\n"); // send error response
     }
+
+    mail_mutex.unlock(); // unlock mutex
 }
 
-void process_del(int sock) {//delete file with username and messagenumber
-    string username = read_line(sock);
-    string msg_num = read_line(sock);
+void process_del(int sock, const string& username) {
+    string msg_num = read_line(sock); // read message number
+
+    // lock mutex before accessing mail spool
+    mail_mutex.lock();
+
     string filepath = mail_spool_dir + "/" + username + "/" + msg_num + ".txt";
 
     if (remove(filepath.c_str()) == 0) {
-        send_response(sock, "OK\n");
+        send_response(sock, "OK\n"); // send ok response
     } else {
-        send_response(sock, "ERR\n");
+        send_response(sock, "ERR\n"); // send error response
     }
+
+    mail_mutex.unlock(); // unlock mutex
+}
+
+bool is_blacklisted(const string& ip) {
+    lock_guard<mutex> lock(blacklist_mutex); // lock mutex
+    auto it = blacklist.find(ip);
+    if (it != blacklist.end()) {
+        time_t current_time = time(nullptr);
+        if (current_time - it->second < 60) { // check if within 1 minute
+            return true; // ip is blacklisted
+        } else {
+            blacklist.erase(it); // remove from blacklist
+            persist_blacklist(); // update blacklist file
+            return false; // ip is not blacklisted
+        }
+    }
+    return false; // ip is not blacklisted
+}
+
+void update_blacklist(const string& ip) {
+    lock_guard<mutex> lock(blacklist_mutex); // lock mutex
+    blacklist[ip] = time(nullptr); // add ip to blacklist with current time
+    persist_blacklist(); // update blacklist file
+}
+
+void persist_blacklist() {
+    ofstream blacklist_file("blacklist.txt"); // open blacklist file
+    for (const auto& entry : blacklist) {
+        blacklist_file << entry.first << " " << entry.second << "\n"; // write each entry
+    }
+    blacklist_file.close(); // close file
+}
+
+void load_blacklist() {
+    ifstream blacklist_file("blacklist.txt"); // open blacklist file
+    if (!blacklist_file.is_open()) {
+        return; // file not found, return
+    }
+    string ip;
+    time_t timestamp;
+    while (blacklist_file >> ip >> timestamp) {
+        blacklist[ip] = timestamp; // load each entry
+    }
+    blacklist_file.close(); // close file
 }
 
