@@ -258,7 +258,8 @@ bool authenticate_user(const string& username, const string& password) {
 void process_send(int sock, const string& username) {
     string receiver = read_line(sock); // read receiver
     string subject = read_line(sock); // read subject
-    string message, line;
+    string filename = read_line(sock);
+    string message, line, file;
 
     // truncate subject if necessary
     if (subject.length() > 80) {
@@ -269,6 +270,9 @@ void process_send(int sock, const string& username) {
     while ((line = read_line(sock)) != ".") {
         message += line + "\n"; // append line to message
     }
+    while ((line = read_line(sock)) != "6943") {
+        file += line + "\n"; 
+    }
 
     // lock mutex before accessing mail spool
     mail_mutex.lock();
@@ -276,6 +280,13 @@ void process_send(int sock, const string& username) {
     // save the message
     string user_dir = mail_spool_dir + "/" + receiver;
     mkdir(user_dir.c_str(), 0777); // create user directory if not exists
+
+    std::ofstream outFile(user_dir + "/" + filename, std::ios::out);
+    if (!outFile && filename != "") {
+        cerr << "Failed to open file: " + filename << endl;
+    }
+    outFile << file;
+    outFile.close();
 
     // count existing messages
     int msg_count = 0;
@@ -294,6 +305,7 @@ void process_send(int sock, const string& username) {
         msg_file << "From: " << username << "\n"; // write sender
         msg_file << "To: " << receiver << "\n"; // write receiver
         msg_file << "Subject: " << subject << "\n"; // write subject
+        msg_file << "Filename: " << filename << "\n";
         msg_file << message; // write message body
         msg_file.close(); // close file
         send_response(sock, "OK\n"); // send ok response

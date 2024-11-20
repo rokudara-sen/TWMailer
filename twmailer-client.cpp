@@ -7,6 +7,8 @@
 #include <arpa/inet.h> // for inet_pton
 #include <sys/socket.h> // for socket functions
 #include <sys/types.h>
+#include <fstream>
+#include <sstream>
 
 #define BUFFER_SIZE 1024 // define buffer size
 
@@ -101,7 +103,7 @@ void interactive_mode(int sock) {
             if (input == "SEND") {
                 send_command(sock, "SEND\n"); // send send command
 
-                string receiver, subject, message, line;
+                string receiver, subject, message, line, fileask, filename, filepath, file;
                 cout << "Receiver: ";
                 getline(cin, receiver); // get receiver
                 cout << "Subject: ";
@@ -116,10 +118,38 @@ void interactive_mode(int sock) {
                     message += line + "\n"; // append line to message
                 }
 
+                cout << "Do you want to send a file?[y|n]";
+            getline(cin, fileask);
+            if(fileask == "y" || fileask == "Y"){
+                cout << "Filepath:";
+                getline(cin, filepath);
+                cout << "Filename:";
+                getline(cin, filename);
+
+                ifstream inputFile(filepath + "/" + filename, std::ios::in);
+                if (inputFile.is_open())
+                {
+                    cout << "File opened!" << endl;
+                }
+                else
+                    cerr << "File could not be opened!" << endl;
+
+                std::ostringstream ss;
+                std::string line;
+                while (std::getline(inputFile, line)) {
+                    ss << line << std::endl;
+                }
+                file = ss.str();
+                inputFile.close();
+            }
+
                 send_command(sock, receiver + "\n"); // send receiver
                 send_command(sock, subject + "\n"); // send subject
+                send_command(sock, filename + "\n");
                 send_command(sock, message); // send message body
                 send_command(sock, ".\n"); // indicate end of message
+                send_command(sock, file);
+                send_command(sock, "6943\n");
 
                 string response = read_line(sock); // read response
                 cout << response;
